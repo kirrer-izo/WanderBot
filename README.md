@@ -1,108 +1,113 @@
-# AgentCore Project
+# Exercise: AgentCore Gateway
 
-This project was created with the [AgentCore CLI](https://github.com/aws/agentcore-cli).
+## Overview
+Connect WanderBot to Lambda-backed tools via AgentCore Gateway. Instead of defining tools with `@tool`, you'll discover them automatically from the Gateway using `MCPClient` and `list_tools_sync()`.
 
-## Project Structure
+**Estimated time:** 20 minutes
 
+## Learning Objectives
+1. Describe the Agent → Gateway → Lambda architecture
+2. Import and configure `MCPClient` with `streamable_http_client`
+3. Use `list_tools_sync()` to discover tools registered in the Gateway
+4. Pass discovered tools to a Strands Agent
+5. Explain what the schema files in `schema/` are for
+
+## Architecture
 ```
-my-project/
-├── AGENTS.md               # AI coding assistant context
-├── agentcore/
-│   ├── agentcore.json      # Project config (agents, memories, credentials, gateways, evaluators)
-│   ├── aws-targets.json    # Deployment targets (account + region)
-│   ├── .env.local          # Secrets — API keys (gitignored)
-│   ├── .llm-context/       # TypeScript type definitions for AI assistants
-│   │   ├── agentcore.ts    # AgentCoreProjectSpec types
-│   │   └── aws-targets.ts  # Deployment target types
-│   └── cdk/                # CDK infrastructure (@aws/agentcore-cdk)
-├── app/                    # Agent application code
-└── evaluators/             # Custom evaluator code (if any)
+WanderBot (Strands Agent)
+    ↓  tool call (MCP protocol)
+AgentCore Gateway  (No Authentication)
+    └── Lambda target  → wanderbot-booking-tools
 ```
 
-## Getting Started
+## Prerequisites
+- Completed Function Calling lesson
+- AWS credentials configured 
 
-### Prerequisites
+## Setup
 
-- **Node.js** 20.x or later
-- **Python 3.10+** and **uv** for Python agents ([install uv](https://docs.astral.sh/uv/getting-started/installation/))
-- **AWS credentials** configured (`aws configure` or environment variables)
-- **Docker** (only for Container build agents)
+### 1. Deploy Lambda functions
+Deploy both Lambda functions before starting the exercise. 
+- **wanderbot-booking-tools** — booking_lambda.py
 
-### Development
+### 2. Create AgentCore Gateway (via Console)
+In the AWS Console → Amazon Bedrock → AgentCore → Gateways:
 
-Run your agent locally:
+1. **Create Gateway** — Name: `wanderbot-gateway`, Authentication: **No Authentication**
+2. **Add target** for booking tools:
+   - Target type: Lambda
+   - Name: `wanderbot-booking-tools`
+   - Lambda ARN: your `wanderbot-booking-tools` function ARN
+   - Schema: paste contents of `schema/booking_lambda.json`
+3. Copy the **Gateway URL** from the console after creation
 
+### 3. Configure environment
+In your `solution.py`, set the Gateway endpoint:
+```python
+GATEWAY_ENDPOINT = "https://<gateway-url>/mcp"
+```
+Install dependencies:
 ```bash
-agentcore dev
+pip install -r requirements.txt
 ```
 
-### Validate Invocation Input
+## Key Concept: What the Schema Files Do
+The Gateway converts the schema into MCP tool definitions. When `list_tools_sync()` is called, it returns these definitions as Strands-compatible tool objects — ready to pass directly to `Agent(tools=...)`.
 
-Validate runtime invocation payloads before forwarding them to an agent framework. Keep user prompts typed as strings
-and pass only prompt text to the agent.
+## Exercise Steps
 
-### Deployment
+### Step 1: Import the MCP classes
+```python
+from mcp.client.streamable_http import streamable_http_client
+from strands.tools.mcp.mcp_client import MCPClient
+```
 
-Deploy to AWS:
+### Step 2: Open a Gateway connection
+```python
+client = MCPClient(
+    lambda: streamable_http_client(url=GATEWAY_ENDPOINT)
+)
+```
 
+### Step 3: Discover tools
+```python
+with client:
+    tools = client.list_tools_sync()
+```
+
+### Step 4: Create the Agent and invoke it
+```python
+    agent = Agent(model=model, system_prompt=SYSTEM_PROMPT, tools=tools)
+    response = agent(user_message)
+```
+
+## How to Test
+```bash
+agentcore configure -e starter.py -n WanderBot -dt container -rf requirements.txt --disable-memory -er $ER -ecr $ECR_URI --non-interactive
+```
 ```bash
 agentcore deploy
 ```
+```bash
+agentcore invoke '{"message": "Can you look up booking BK-1001?"}'
+```
+```bash
+agentcore invoke '{"message": "What bookings does alice@example.com have?"}'
+```
 
-## Commands
+## Hints
+- `list_tools_sync()` returns a list of Strands tool objects; pass it directly to `tools=` in `Agent()`
+- No `@tool` decorators needed — the tools are defined in the Gateway via the schema files
 
-| Command | Description |
-| --- | --- |
-| `agentcore create` | Create a new AgentCore project |
-| `agentcore add` | Add resources (agent, memory, credential, gateway, evaluator, policy) |
-| `agentcore remove` | Remove resources |
-| `agentcore dev` | Run agent locally with hot-reload |
-| `agentcore deploy` | Deploy to AWS via CDK |
-| `agentcore status` | Show deployment status |
-| `agentcore invoke` | Invoke agent (local or deployed) |
-| `agentcore logs` | View agent logs |
-| `agentcore traces` | View agent traces |
-| `agentcore eval` | Run evaluations |
-| `agentcore package` | Package agent artifacts |
-| `agentcore validate` | Validate configuration |
-| `agentcore pause` | Pause a deployed agent |
-| `agentcore resume` | Resume a paused agent |
-| `agentcore fetch` | Fetch remote resource definitions |
-| `agentcore import` | Import existing resources |
-| `agentcore update` | Check for CLI updates |
+## Common Errors
+| Error | Fix |
+|-------|-----|
+| `Connection refused` | Check `GATEWAY_ENDPOINT` is set and the Gateway is active |
+| `0 tools discovered` | Verify the Lambda target is registered in the Gateway with correct schema |
+| Agent answers without tools | Ensure tools are passed as `tools=tools`, not `tools=[]` |
 
-## Configuration
-
-Edit the JSON files in `agentcore/` to configure your project. See `agentcore/.llm-context/` for type definitions and validation constraints.
-
-The project uses a **flat resource model** — agents, memories, credentials, gateways, evaluators, and policies are top-level arrays in `agentcore.json`. Resources are independent; agents discover memories and credentials at runtime via environment variables or SDK calls.
-
-## Resources
-
-| Resource | Purpose |
-| --- | --- |
-| Agent (runtime) | HTTP, MCP, or A2A agent deployed to AgentCore Runtime |
-| Memory | Persistent context storage with configurable strategies |
-| Credential | API key or OAuth credential providers |
-| Gateway | MCP gateway that routes tool calls to targets |
-| Gateway Target | Tool implementation (Lambda, MCP server, OpenAPI, Smithy, API Gateway) |
-| Evaluator | Custom LLM-as-a-Judge or code-based evaluation |
-| Online Eval Config | Continuous evaluation pipeline for deployed agents |
-| Policy | Cedar authorization policies for gateway tools |
-
-### Agent Types
-
-- **Template agents**: Created from framework templates (Strands, LangChain/LangGraph, GoogleADK, OpenAI Agents, Autogen)
-- **BYO agents**: Bring your own code with `agentcore add agent --type byo`
-- **Import agents**: Import existing Bedrock agents with `agentcore import`
-
-### Build Types
-
-- **CodeZip**: Python source packaged as a zip and deployed directly to AgentCore Runtime
-- **Container**: Docker image built via CodeBuild (ARM64), pushed to ECR, and deployed to AgentCore Runtime
-
-## Documentation
-
-- [AgentCore CLI](https://github.com/aws/agentcore-cli)
-- [AgentCore CDK Constructs](https://github.com/aws/agentcore-l3-cdk-constructs)
-- [Amazon Bedrock AgentCore](https://aws.amazon.com/bedrock/agentcore/)
+## Files
+| File | Purpose |
+|------|---------|
+| `lambda/booking_lambda.py` | Lambda: booking lookup and email search |
+| `schema/booking_lambda.json` | Tool schema for booking Lambda target |
